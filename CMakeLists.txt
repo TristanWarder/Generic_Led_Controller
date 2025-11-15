@@ -20,7 +20,7 @@ add_executable(main
 pico_enable_stdio_usb(main 1)
 
 # pull in common dependencies
-target_link_libraries(main pico_stdlib PicoLed)
+target_link_libraries(main pico_stdlib hardware_adc PicoLed)
 
 if (PICO_CYW43_SUPPORTED)
     target_link_libraries(main pico_cyw43_arch_none)

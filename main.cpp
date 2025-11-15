@@ -1,6 +1,10 @@
+#include <pico/time.h>
 #include <stdio.h>
 #include <cstdint>
+#include "PicoLedController.hpp"
 #include "pico/stdlib.h"
+#include "hardware/gpio.h"
+#include "hardware/adc.h"
 
 #include <PicoLed.hpp>
 #include <Effects/Marquee.hpp>
@@ -9,12 +13,16 @@
 #include <Effects/Bounce.hpp>
 #include <Effects/Particles.hpp>
 
+#include <functional>
+#include <vector>
+
 #define LED_PIN 0
-#define LED_LENGTH 540
+#define LED_LENGTH 63
+
+#define BUTTON_PIN 1
+#define KNOB_PIN 26
 
 PicoLed::Color previous[LED_LENGTH];
-
-PicoLed::Color purple{166, 0, 255};
 
 void scrollStrip(PicoLed::PicoLedController* strip, bool flip = false) {
   PicoLed::Color previous[LED_LENGTH];
@@ -59,42 +67,104 @@ void scrollStrip(PicoLed::PicoLedController* strip, bool flip = false) {
   }
 }
 
-void fillGreenPurple(PicoLed::PicoLedController* strip, int swaps, bool startGreen = true) {
-  bool fillGreen = startGreen;
+void fillAlternating(PicoLed::PicoLedController* strip, PicoLed::Color first, PicoLed::Color second, int swaps, bool startFirst = true) {
+  bool fillFirst = startFirst;
   int length = strip->getNumLeds();
   for(int i = 0; i < length; i += (length / swaps)) {
-    if(fillGreen) {
-      strip->fill({0, 255, 0}, i, length / swaps);
+    if(fillFirst) {
+      strip->fill(first, i, length / swaps);
     }
     else {
-      strip->fill(purple, i, length / swaps);
+      strip->fill(second, i, length / swaps);
     }
-    fillGreen = !fillGreen;
+    fillFirst = !fillFirst;
   }
 }
+
+struct Animation {
+  std::function<void()> init = nullptr;
+  std::function<void()> animate = nullptr;
+  uint32_t delay = 10;
+};
+
+uint32_t lastAnimationTimestamp;
 
 int main()
 {
   stdio_init_all();
   sleep_ms(1000);
 
-  // 0. Initialize LED strip
+  gpio_set_dir(BUTTON_PIN, GPIO_IN);
+  gpio_pull_up(BUTTON_PIN);
+
+  adc_init();
+  adc_gpio_init(KNOB_PIN);
+  adc_select_input(0);
+
+  bool buttonState = false;
+
+  int32_t currentAnimation = -1;
+  int32_t targetAnimation = 0;
+  uint32_t currentAnimationDelay = 1;
+
   auto mainStrip = PicoLed::addLeds<PicoLed::WS2812B>(pio0, 0, LED_PIN, LED_LENGTH, PicoLed::FORMAT_GRB);
+
+  std::vector<Animation> animations{};
+
+  PicoLed::Comet heartbeat(mainStrip, {255, 0, 0}, 40.0, 40.0, 40.0);
+  Animation heartbeatComet {
+    nullptr,
+    [&]() {
+      heartbeat.animate();
+    },
+    1
+  };
+
+  Animation heartbeatScroll {
+    [&]() {
+      mainStrip.clear();
+      fillAlternating(&mainStrip, {255, 0, 0}, {0, 0, 0}, 3);
+    },
+    [&]() {
+      scrollStrip(&mainStrip);
+    },
+    40
+  };
+
+  animations.push_back(heartbeatComet);
+  animations.push_back(heartbeatScroll);
+
+  // 0. Initialize LED strip
   mainStrip.setBrightness(127);
 
   mainStrip.clear();
-  mainStrip.show();
-
-  fillGreenPurple(&mainStrip, 6);
 
   mainStrip.show();
 
+  lastAnimationTimestamp = to_ms_since_boot(get_absolute_time());
   while(true) {
-      
-      scrollStrip(&mainStrip);
-
+    uint32_t currentTimestamp = to_ms_since_boot(get_absolute_time());
+    Animation* current = nullptr;
+    // If animation has been changed, move pointer and call animation init
+    if(targetAnimation != currentAnimation) {
+      current = &animations[targetAnimation];
+      if(current->init != nullptr) current->init();
+      currentAnimation = targetAnimation;
       mainStrip.show();
-      sleep_ms(1);
+      lastAnimationTimestamp = currentTimestamp;
+    } else {
+      // Check if animation delay has elapsed, if so animate
+      current = &animations[currentAnimation];
+      if(currentTimestamp - lastAnimationTimestamp > current->delay) {
+        if(current->animate != nullptr) current->animate();
+        mainStrip.show();
+        lastAnimationTimestamp = to_ms_since_boot(get_absolute_time());
+      }
+
     }
-    return 0;
+
+    sleep_ms(10);
+  }
+
+  return 0;
 }
